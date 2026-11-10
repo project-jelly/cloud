@@ -46,7 +46,9 @@ jobs:
           token: ${{ steps.reader.outputs.token }}
           path: .control
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            deploy/ci
       - name: Validate immutable Core request
         id: gate
         env:
@@ -61,8 +63,12 @@ jobs:
           CORE_READ_TOKEN: ${{ steps.reader.outputs.token }}
           TESTED_SHA: ${{ steps.gate.outputs.tested_sha }}
         run: bash .github/scripts/private_run.sh bash .github/scripts/checkout_core.sh
-      - name: Check Rust and container
-        run: bash .github/scripts/private_run.sh make -C source release-check
+      - name: Test and build Rust
+        run: bash .github/scripts/private_run.sh make -C source ci
+      - name: Install verified Trivy
+        run: bash deploy/ci/install-trivy.sh
+      - name: Build, smoke test, and scan container and dependencies
+        run: bash .github/scripts/private_run.sh make -C source image-security-check
       - name: Ensure Core read token is revoked after setup failure
         if: always() && steps.reader.outputs.token != '' && steps.source.outcome != 'success'
         working-directory: ${{ github.workspace }}
