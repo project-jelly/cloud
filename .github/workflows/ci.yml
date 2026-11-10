@@ -1,0 +1,75 @@
+name: '[ci][core-request][gh-linux] Build & Test'
+run-name: Core ci ${{ fromJSON(inputs.request).request.run_id }}.${{ fromJSON(inputs.request).request.attempt }} ${{ fromJSON(inputs.request).request.tested_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: Immutable Core CI request
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rust:
+    name: Rust
+    if: >-
+      github.repository_id == '1452070902' && github.ref == 'refs/heads/main' &&
+      vars.CI_BRIDGE_ENABLED == 'true' && vars.CI_DISPATCH_ACTOR_ID != '' &&
+      github.actor_id == vars.CI_DISPATCH_ACTOR_ID && github.run_attempt == 1
+    runs-on: ubuntu-26.04
+    environment: core-read
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: .control
+    steps:
+      - name: Mint scoped Core read token
+        id: reader
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
+          owner: project-jelly
+          repositories: cloud-core
+          permission-contents: read
+          permission-actions: read
+          skip-token-revoke: true
+      - name: Checkout trusted private CI control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: project-jelly/cloud-core
+          ref: main
+          token: ${{ steps.reader.outputs.token }}
+          path: .control
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Validate immutable Core request
+        id: gate
+        env:
+          CORE_TOKEN: ${{ steps.reader.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          CI_DISPATCH_ACTOR_ID: ${{ vars.CI_DISPATCH_ACTOR_ID }}
+          REQUEST_JSON: ${{ inputs.request }}
+        run: python3 .github/scripts/ci_bridge.py gate >> "$GITHUB_OUTPUT"
+      - name: Fetch exact private source and revoke read token
+        id: source
+        env:
+          CORE_READ_TOKEN: ${{ steps.reader.outputs.token }}
+          TESTED_SHA: ${{ steps.gate.outputs.tested_sha }}
+        run: bash .github/scripts/private_run.sh bash .github/scripts/checkout_core.sh
+      - name: Check Rust and container
+        run: bash .github/scripts/private_run.sh make -C source release-check
+      - name: Ensure Core read token is revoked after setup failure
+        if: always() && steps.reader.outputs.token != '' && steps.source.outcome != 'success'
+        working-directory: ${{ github.workspace }}
+        env:
+          CORE_READ_TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          status=$(printf 'header = "Authorization: Bearer %s"\n' "$CORE_READ_TOKEN" |
+            curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' \
+              --request DELETE --config - https://api.github.com/installation/token)
+          test "$status" = 204 || test "$status" = 401
