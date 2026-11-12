@@ -99,68 +99,15 @@ jobs:
   rust:
     name: RustSec Audit
     needs: gate
-    if: github.repository_id == '1452070902' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-26.04
-    environment: core-read
-    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
-    steps:
-      - name: Create scoped Core metadata token
-        id: core-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
-        with:
-          client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
-          owner: project-jelly
-          repositories: cloud-core
-          permission-contents: read
-          permission-actions: read
-          permission-pull-requests: read
-          skip-token-revoke: true
-      - name: Checkout frozen private CI control
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: project-jelly/cloud-core
-          ref: ${{ needs.gate.outputs.core_sha }}
-          token: ${{ steps.core-token.outputs.token }}
-          path: .control
-          persist-credentials: false
-          sparse-checkout: |
-            .github
-            deploy/ci
-      - name: Validate current public CI worker
-        id: worker
-        uses: ./.control/.github/actions/ci-worker-entry
-        with:
-          request: ${{ inputs.request }}
-          kind: dependency-security
-          source-sha: ${{ needs.gate.outputs.tested_sha }}
-          core-token: ${{ steps.core-token.outputs.token }}
-          control-sha: ${{ needs.gate.outputs.core_sha }}
-      - name: Ensure worker metadata token is revoked
-        if: ${{ always() && steps.core-token.outputs.token != '' }}
-        env:
-          CORE_TOKEN: ${{ steps.core-token.outputs.token }}
-        run: |
-          if [ -f "$RUNNER_TEMP/cloud-core-metadata-revoked" ]; then
-            exit 0
-          fi
-          status=$(printf 'header = "Authorization: Bearer %s"\n' "$CORE_TOKEN" |
-            curl --silent --show-error --connect-timeout 10 --max-time 30 --output /dev/null --write-out '%{http_code}' \
-              --request DELETE --config - https://api.github.com/installation/token)
-          test "$status" = 204
-      - name: Fetch exact private source and revoke read token
-        uses: ./.control/.github/actions/checkout-core
-        with:
-          sha: ${{ needs.gate.outputs.tested_sha }}
-          client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
-        with:
-          tool: cargo-audit@0.22.2
-          fallback: none
-      - name: Audit the exact source lockfile
-        run: private_run.sh cargo audit --file source/Cargo.lock --deny yanked
+    uses: cagojeiger/notehub/.github/workflows/rust.yml@main
+    with:
+      core: cloud-core
+      task: audit
+      request: ${{ inputs.request }}
+      core_sha: ${{ needs.gate.outputs.core_sha }}
+      tested_sha: ${{ needs.gate.outputs.tested_sha }}
+    secrets:
+      CORE_READ_APP_PRIVATE_KEY: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
