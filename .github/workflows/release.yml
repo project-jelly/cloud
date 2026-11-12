@@ -243,7 +243,6 @@ jobs:
     permissions:
       contents: read
       packages: read
-      security-events: write
     strategy:
       fail-fast: false
       matrix:
