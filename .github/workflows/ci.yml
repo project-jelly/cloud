@@ -1,34 +1,116 @@
-name: '[ci][core-request][gh-linux] Build & Test'
+name: "[ci][core-request][gh-linux] Build & Test"
 run-name: Core ci ${{ fromJSON(inputs.request).request.run_id }}.${{ fromJSON(inputs.request).request.attempt }} ${{ fromJSON(inputs.request).request.tested_sha }}
 
 on:
   workflow_dispatch:
     inputs:
       request:
-        description: Immutable Core CI request
+        description: Validated core workflow run and immutable source request
         required: true
         type: string
 
 permissions:
   contents: read
-  actions: read
+
+concurrency:
+  group: core-ci-${{ fromJSON(inputs.request).request.event == 'pull_request' && format('pr-{0}', fromJSON(inputs.request).request.pr_number) || format('run-{0}', fromJSON(inputs.request).request.run_id) }}
+  cancel-in-progress: ${{ fromJSON(inputs.request).request.event == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+  DOCKER_BUILD_SUMMARY: "false"
 
 jobs:
-  rust:
-    name: Rust
+  gate:
+    name: Validate core request
+    permissions:
+      contents: read
+      actions: read
     if: >-
       github.repository_id == '1452070902' && github.ref == 'refs/heads/main' &&
-      vars.CI_BRIDGE_ENABLED == 'true' && vars.CI_DISPATCH_ACTOR_ID != '' &&
-      github.actor_id == vars.CI_DISPATCH_ACTOR_ID && github.run_attempt == 1
+      vars.CI_BRIDGE_ENABLED == 'true' && github.actor_id == vars.CI_DISPATCH_ACTOR_ID && github.run_attempt == 1
+    runs-on: ubuntu-26.04
+    environment: core-read
+    timeout-minutes: 20
+    outputs:
+      tested_sha: ${{ steps.request.outputs.tested_sha }}
+      core_sha: ${{ steps.request.outputs.core_sha }}
+
+    steps:
+      - name: Create scoped core metadata token
+        id: core-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
+          owner: project-jelly
+          repositories: cloud-core
+          skip-token-revoke: true
+          permission-contents: read
+          permission-actions: read
+          permission-pull-requests: read
+
+      - name: Checkout trusted private CI control
+        id: control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: project-jelly/cloud-core
+          ref: main
+          token: ${{ steps.core-token.outputs.token }}
+          path: .control
+          fetch-depth: 1
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - name: Validate immutable core request
+        id: request
+        env:
+          REQUEST_JSON: ${{ inputs.request }}
+          CORE_CONTROL_SHA: ${{ steps.control.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+          CORE_TOKEN: ${{ steps.core-token.outputs.token }}
+        run: python3 .control/.github/scripts/ci_bridge.py gate --kind ci >> "$GITHUB_OUTPUT"
+
+      - name: Revoke gate metadata token
+        if: ${{ always() && steps.core-token.outputs.token != '' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          CORE_TOKEN: ${{ steps.core-token.outputs.token }}
+          CORE_TOKEN_REVOKE_RECEIPT: ${{ runner.temp }}/cloud-core-metadata-revoked
+        run: bash .control/.github/scripts/checkout_core_revoke.sh
+
+      - name: Ensure core metadata token revoked
+        if: ${{ always() && steps.core-token.outputs.token != '' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        env:
+          CORE_TOKEN: ${{ steps.core-token.outputs.token }}
+        run: |
+          if [ -f "$RUNNER_TEMP/cloud-core-metadata-revoked" ]; then
+            exit 0
+          fi
+          status=$(printf 'header = "Authorization: Bearer %s"\n' "$CORE_TOKEN" | \
+            curl --silent --show-error --connect-timeout 10 --max-time 30 --output /dev/null --write-out '%{http_code}' \
+              --request DELETE --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' --config - \
+              https://api.github.com/installation/token)
+          test "$status" = 204
+
+  rust:
+    name: Rust
+    needs: gate
+    if: github.repository_id == '1452070902' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     environment: core-read
     timeout-minutes: 45
-    defaults:
-      run:
-        working-directory: .control
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Mint scoped Core read token
-        id: reader
+      - name: Create scoped Core metadata token
+        id: core-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
@@ -37,45 +119,49 @@ jobs:
           repositories: cloud-core
           permission-contents: read
           permission-actions: read
+          permission-pull-requests: read
           skip-token-revoke: true
-      - name: Checkout trusted private CI control
+      - name: Checkout frozen private CI control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: project-jelly/cloud-core
-          ref: main
-          token: ${{ steps.reader.outputs.token }}
+          ref: ${{ needs.gate.outputs.core_sha }}
+          token: ${{ steps.core-token.outputs.token }}
           path: .control
           persist-credentials: false
           sparse-checkout: |
-            .github/scripts
+            .github
             deploy/ci
-      - name: Validate immutable Core request
-        id: gate
+      - name: Validate current public CI worker
+        id: worker
+        uses: ./.control/.github/actions/ci-worker-entry
+        with:
+          request: ${{ inputs.request }}
+          kind: ci
+          source-sha: ${{ needs.gate.outputs.tested_sha }}
+          core-token: ${{ steps.core-token.outputs.token }}
+          control-sha: ${{ needs.gate.outputs.core_sha }}
+      - name: Ensure worker metadata token is revoked
+        if: ${{ always() && steps.core-token.outputs.token != '' }}
         env:
-          CORE_TOKEN: ${{ steps.reader.outputs.token }}
-          GH_TOKEN: ${{ github.token }}
-          CI_DISPATCH_ACTOR_ID: ${{ vars.CI_DISPATCH_ACTOR_ID }}
-          REQUEST_JSON: ${{ inputs.request }}
-        run: python3 .github/scripts/ci_bridge.py gate >> "$GITHUB_OUTPUT"
-      - name: Fetch exact private source and revoke read token
-        id: source
-        env:
-          CORE_READ_TOKEN: ${{ steps.reader.outputs.token }}
-          TESTED_SHA: ${{ steps.gate.outputs.tested_sha }}
-        run: bash .github/scripts/private_run.sh bash .github/scripts/checkout_core.sh
-      - name: Test and build Rust
-        run: bash .github/scripts/private_run.sh make -C source ci
-      - name: Install verified Trivy
-        run: bash deploy/ci/install-trivy.sh
-      - name: Build, smoke test, and scan container and dependencies
-        run: bash .github/scripts/private_run.sh make -C source image-security-check
-      - name: Ensure Core read token is revoked after setup failure
-        if: always() && steps.reader.outputs.token != '' && steps.source.outcome != 'success'
-        working-directory: ${{ github.workspace }}
-        env:
-          CORE_READ_TOKEN: ${{ steps.reader.outputs.token }}
+          CORE_TOKEN: ${{ steps.core-token.outputs.token }}
         run: |
-          status=$(printf 'header = "Authorization: Bearer %s"\n' "$CORE_READ_TOKEN" |
-            curl --silent --show-error --max-time 15 --output /dev/null --write-out '%{http_code}' \
+          if [ -f "$RUNNER_TEMP/cloud-core-metadata-revoked" ]; then
+            exit 0
+          fi
+          status=$(printf 'header = "Authorization: Bearer %s"\n' "$CORE_TOKEN" |
+            curl --silent --show-error --connect-timeout 10 --max-time 30 --output /dev/null --write-out '%{http_code}' \
               --request DELETE --config - https://api.github.com/installation/token)
-          test "$status" = 204 || test "$status" = 401
+          test "$status" = 204
+      - name: Fetch exact private source and revoke read token
+        uses: ./.control/.github/actions/checkout-core
+        with:
+          sha: ${{ needs.gate.outputs.tested_sha }}
+          client-id: ${{ vars.CORE_READ_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CORE_READ_APP_PRIVATE_KEY }}
+      - name: Test and build Rust
+        run: private_run.sh make -C source ci
+      - name: Install verified Trivy
+        run: bash .control/deploy/ci/install-trivy.sh
+      - name: Build, smoke test, and scan container and dependencies
+        run: private_run.sh make -C source image-security-check
