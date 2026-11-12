@@ -31,8 +31,6 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE: project-jelly/cloud
-  DOCKER_BUILD_RECORD_UPLOAD: "false"
-  DOCKER_BUILD_SUMMARY: "false"
 
 jobs:
   version:

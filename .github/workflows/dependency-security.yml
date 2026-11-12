@@ -13,13 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: core-dependency-security-${{ fromJSON(inputs.request).request.event == 'pull_request' && format('pr-{0}', fromJSON(inputs.request).request.pr_number) || format('run-{0}', fromJSON(inputs.request).request.run_id) }}
-  cancel-in-progress: ${{ fromJSON(inputs.request).request.event == 'pull_request' }}
+  group: core-dependency-security-${{ fromJSON(inputs.request).request.run_id }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  DOCKER_BUILD_RECORD_UPLOAD: "false"
-  DOCKER_BUILD_SUMMARY: "false"
 
 jobs:
   gate:
