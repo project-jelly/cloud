@@ -1,14 +1,11 @@
 # Jelly Cloud
 
-This public repository is the GitHub Actions worker for Jelly Cloud. The
-private Jelly Cloud Core repository owns the application, request authority,
-and result and recovery state. Workflow syntax validation runs on main pushes
-and workflow pull requests. The Rust job is disabled until the bridge is configured.
+Jelly Cloud의 공개 CI·릴리즈 실행 리포다. 애플리케이션 소스와 요청 권한은 비공개 Core가 소유한다.
 
-The Rust job validates the bound request using Core's CI control. It fetches
-the exact tested commit and revokes its scoped reader token before executing
-checks. Core records the actual control and public workflow revisions. Private
-build output and GitHub command files are suppressed.
+Core Bridge 요청을 gate와 worker에서 검증하고 정확한 소스를 체크아웃한다. 조회 토큰은 소스 실행 전에 폐기하며 원시 빌드 출력은 공개하지 않는다.
 
-The workflow is adapted from [LibraryHub](https://github.com/cagojeiger/libraryhub/tree/0171e1d237bd714169659d22f3328518ba05cb69) and [Mossden's public CI control](https://github.com/cagojeiger/mossden/tree/7706e75f5e8a1587c454fe9f439c08268dd8eef1)
-and is provided under [GPL-3.0](LICENSE).
+릴리즈는 Core가 승인된 소스 태그·CI·Release notes로 요청한다. Public은 native amd64·arm64 빌드와 smoke test, 이미지·의존성 검사를 수행하고 기존 비공개 GHCR 패키지에 발행한다. Public Release에는 승인된 노트와 image-digests.json을 게시하며 Core가 결과를 대조해 완료 기록을 남긴다.
+
+Reader 키는 main 전용 core-read 환경에 저장한다. 같은 기존 App을 재사용하며 새 자격 증명을 발급하지 않는다.
+
+CI·릴리즈는 [NoteHub](https://github.com/cagojeiger/notehub)와 같은 제어 패턴을 사용하며 [GPL-3.0](LICENSE)으로 제공한다.
